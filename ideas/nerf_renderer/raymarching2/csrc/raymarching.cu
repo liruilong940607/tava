@@ -177,7 +177,7 @@ __global__ void kernel_generate_training_samples(
     int* numsteps_counter,  // total samples.
     const int max_samples,
     int* rays_counter,  // total rays.
-    int* ray_indices_out,  // output ray indices.
+    int* indices_out,  // output ray & point indices.
     scalar_t* positions_out,  // output samples
     scalar_t* dirs_out,  // output dirs
     scalar_t* deltas_out  // output delta t
@@ -268,10 +268,9 @@ __global__ void kernel_generate_training_samples(
 
     uint32_t ray_idx = atomicAdd(rays_counter, 1);
 
-	ray_indices_out[ray_idx] = i;
-	// rays_out_unnormalized[ray_idx] = ray_unnormalized;
-	// numsteps_out[ray_idx*2+0] = numsteps;
-	// numsteps_out[ray_idx*2+1] = base;
+	indices_out[ray_idx * 3 + 0] = i;  // ray idx in {rays_o, rays_d}
+    indices_out[ray_idx * 3 + 1] = base;  // point idx start.
+    indices_out[ray_idx * 3 + 2] = numsteps;  // point idx shift.
 
 	t = startt;
 	j = 0;
@@ -316,6 +315,8 @@ std::vector<torch::Tensor> generate_training_samples(
     torch::Tensor rays_o, torch::Tensor rays_d, torch::Tensor aabb,
     torch::Tensor density_bitfield, int max_samples
 ) {
+    // TODO(ruilongli): check dim of density_bitfield, 
+    // infer grid_size from density_bitfield
     CHECK_INPUT(rays_o);
     CHECK_INPUT(rays_d);
     CHECK_INPUT(aabb);
@@ -333,13 +334,15 @@ std::vector<torch::Tensor> generate_training_samples(
     torch::Tensor nears = torch::empty({n_rays}, rays_o.options());
     torch::Tensor fars = torch::empty({n_rays}, rays_o.options());
 
+    // helper counter
     torch::Tensor numsteps_counter = torch::zeros(
         {1}, rays_o.options().dtype(torch::kInt32));
     torch::Tensor rays_counter = torch::zeros(
         {1}, rays_o.options().dtype(torch::kInt32));
-    torch::Tensor ray_indices = torch::empty(
-        {n_rays}, rays_o.options().dtype(torch::kInt32));
 
+    // output samples
+    torch::Tensor indices = torch::zeros(
+        {n_rays, 3}, rays_o.options().dtype(torch::kInt32));  // ray_id, sample_id, num_samples
     torch::Tensor positions = torch::empty({max_samples, 3}, rays_o.options());
     torch::Tensor dirs = torch::empty({max_samples, 3}, rays_o.options());
     torch::Tensor deltas = torch::empty({max_samples}, rays_o.options());
@@ -360,12 +363,12 @@ std::vector<torch::Tensor> generate_training_samples(
                 numsteps_counter.data_ptr<int>(),  // total samples.
                 max_samples,
                 rays_counter.data_ptr<int>(),  // total rays.
-                ray_indices.data_ptr<int>(),  // output ray indices.
+                indices.data_ptr<int>(),  // output ray indices.
                 positions.data_ptr<scalar_t>(),  // output samples
                 dirs.data_ptr<scalar_t>(),  // output dirs
                 deltas.data_ptr<scalar_t>()  // output delta t
             ); 
         }));
 
-    return {positions, dirs, deltas, nears, fars};
+    return {indices, positions, dirs, deltas, nears, fars};
 }

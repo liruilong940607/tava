@@ -121,7 +121,7 @@ if __name__ == "__main__":
     aabb = torch.tensor([0., 0., 0., 1., 1., 1.]).to("cuda")
 
     for _ in tqdm.tqdm(range(1)):
-        positions, dirs, deltas, nears, fars = raymarching2.generate_training_samples(
+        indices, positions, dirs, deltas, nears, fars = raymarching2.generate_training_samples(
             rays_o, rays_d, aabb, density_bitfield
         )
         torch.cuda.synchronize()

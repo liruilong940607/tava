@@ -24,11 +24,25 @@ class _generate_training_samples(Function):
         input_shape = rays_o.shape[:-1]
         rays_o = rays_o.contiguous().view(-1, 3)
         rays_d = rays_d.contiguous().view(-1, 3)
-        positions, dirs, deltas, nears, fars = _backend.generate_training_samples(
+        indices, positions, dirs, deltas, nears, fars = _backend.generate_training_samples(
             rays_o, rays_d, aabb, density_bitfield, max_samples
         )
+        # # check
+        # indices = indices.long()
+        # ray_ids, sample_ids, sample_cnts = torch.split(indices, 1, dim=-1)
+        # for ray_id, sample_id, sample_cnt in zip(
+        #     ray_ids, sample_ids, sample_cnts
+        # ):
+        #     if sample_cnt == 0:
+        #         continue
+        #     errs = dirs[sample_id: sample_id + sample_cnt] - rays_d[ray_id]
+        #     max_err = torch.linalg.norm(errs).max()
+        #     print ("max_err", max_err)
+        
         nears = nears.view(input_shape)
         fars = fars.view(input_shape)
-        return positions, dirs, deltas, nears, fars
+        indices = indices.view(input_shape + torch.Size([3]))
+
+        return indices, positions, dirs, deltas, nears, fars
 generate_training_samples = _generate_training_samples.apply
 
