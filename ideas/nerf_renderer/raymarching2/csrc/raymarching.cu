@@ -382,7 +382,6 @@ std::vector<torch::Tensor> generate_training_samples(
 template <typename scalar_t>
 __global__ void volumetric_rendering_kernel(
     const uint32_t n_rays,
-    const scalar_t* rays_o,  // input ray origins
     const int* indices,  // input ray & point indices.
     const scalar_t* positions,  // input samples
     const scalar_t* deltas,  // input delta t
@@ -409,7 +408,6 @@ __global__ void volumetric_rendering_kernel(
     sigmas += base;
     rgbs += base * 3;
 
-    rays_o += i * 3;
     accumulated_weight += i;
     accumulated_depth += i;
     accumulated_color += i * 3;
@@ -450,11 +448,9 @@ __global__ void volumetric_rendering_kernel(
 
 
 std::vector<torch::Tensor> volumetric_rendering(
-    torch::Tensor rays_o, torch::Tensor indices, torch::Tensor positions, 
-    torch::Tensor deltas, torch::Tensor ts, 
+    torch::Tensor indices, torch::Tensor positions, torch::Tensor deltas, torch::Tensor ts, 
     torch::Tensor sigmas, torch::Tensor rgbs, torch::Tensor bkgd_rgb
 ) {
-    CHECK_INPUT(rays_o); 
     CHECK_INPUT(indices);
     CHECK_INPUT(positions);
     CHECK_INPUT(deltas);
@@ -462,7 +458,6 @@ std::vector<torch::Tensor> volumetric_rendering(
     CHECK_INPUT(sigmas);
     CHECK_INPUT(rgbs);
     CHECK_INPUT(bkgd_rgb);
-    TORCH_CHECK(rays_o.ndimension() == 2);
     TORCH_CHECK(indices.ndimension() == 2);
     TORCH_CHECK(positions.ndimension() == 2);
     TORCH_CHECK(deltas.ndimension() == 1);
@@ -470,24 +465,23 @@ std::vector<torch::Tensor> volumetric_rendering(
     TORCH_CHECK(sigmas.ndimension() == 1);
     TORCH_CHECK(rgbs.ndimension() == 2);
     TORCH_CHECK(bkgd_rgb.ndimension() == 1);
-    const uint32_t n_rays = rays_o.size(0);
+    const uint32_t n_rays = indices.size(0);
 
     const int cuda_n_threads = std::min<int>(n_rays, CUDA_MAX_THREADS);
     const int blocks = CUDA_N_BLOCKS_NEEDED(n_rays, cuda_n_threads);
 
     // outputs
-    torch::Tensor accumulated_weight = torch::zeros({n_rays}, rays_o.options()); 
-    torch::Tensor accumulated_depth = torch::zeros({n_rays}, rays_o.options()); 
-    torch::Tensor accumulated_color = torch::zeros({n_rays, 3}, rays_o.options()); 
-    torch::Tensor accumulated_position = torch::zeros({n_rays, 3}, rays_o.options()); 
+    torch::Tensor accumulated_weight = torch::zeros({n_rays}, sigmas.options()); 
+    torch::Tensor accumulated_depth = torch::zeros({n_rays}, sigmas.options()); 
+    torch::Tensor accumulated_color = torch::zeros({n_rays, 3}, sigmas.options()); 
+    torch::Tensor accumulated_position = torch::zeros({n_rays, 3}, sigmas.options()); 
 
     AT_DISPATCH_FLOATING_TYPES(
-        rays_o.scalar_type(),
+        sigmas.scalar_type(),
         "volumetric_rendering",
         ([&]
          { volumetric_rendering_kernel<<<blocks, cuda_n_threads>>>(
                 n_rays,
-                rays_o.data_ptr<scalar_t>(),
                 indices.data_ptr<int>(), 
                 positions.data_ptr<scalar_t>(),
                 deltas.data_ptr<scalar_t>(),
@@ -508,4 +502,130 @@ std::vector<torch::Tensor> volumetric_rendering(
         accumulated_color, 
         accumulated_position
     };
+}
+
+
+
+template <typename scalar_t>
+__global__ void volumetric_rendering_backward_kernel(
+    const uint32_t n_rays,
+    const int* indices,  // input ray & point indices.
+    const scalar_t* positions,  // input samples
+    const scalar_t* deltas,  // input delta t
+    const scalar_t* ts,  // input t
+    const scalar_t* sigmas,  // input density after activation
+    const scalar_t* rgbs,  // input rgb after activation 
+    const scalar_t* bkgd_rgb,  // input background color
+    const scalar_t* accumulated_color,  // forward output
+    const scalar_t* grad_color,  // input (only support this by now)
+    scalar_t* grad_sigmas,  // output
+    scalar_t* grad_rgbs  // output
+) {
+    CUDA_GET_THREAD_ID(thread_id, n_rays);
+
+    // locate
+    int i = indices[thread_id * 3 + 0];  // ray idx in {rays_o, rays_d}
+    int base = indices[thread_id * 3 + 1];  // point idx start.
+    int numsteps = indices[thread_id * 3 + 2];  // point idx shift.
+
+    positions += base * 3;
+    deltas += base;
+    ts += base;
+    sigmas += base;
+    rgbs += base * 3;
+
+    accumulated_color += i * 3;
+    grad_color += i * 3;
+    
+    // backward of accumulated rendering
+    float T = 1.f;
+	float EPSILON = 1e-4f;
+	int j = 0;
+    scalar_t r = 0, g = 0, b = 0, ws = 0;
+    const scalar_t r_accum = accumulated_color[0];
+    const scalar_t g_accum = accumulated_color[1];
+    const scalar_t b_accum = accumulated_color[2];
+    for (; j < numsteps; ++j) {
+		if (T < EPSILON) {
+			break;
+		}
+
+		const float alpha = 1.f - __expf(-sigmas[j] * deltas[j]);
+		const float weight = alpha * T;
+
+        r += weight * rgbs[j * 3 + 0];
+        g += weight * rgbs[j * 3 + 1];
+        b += weight * rgbs[j * 3 + 2];
+        ws += weight;
+
+		T *= (1.f - alpha);
+
+        grad_rgbs[j * 3 + 0] = grad_color[0] * weight;
+        grad_rgbs[j * 3 + 1] = grad_color[1] * weight;
+        grad_rgbs[j * 3 + 2] = grad_color[2] * weight;
+
+        grad_sigmas[j] = deltas[j] * (
+            grad_color[0] * (T * rgbs[j * 3 + 0] - (r_accum - r)) +
+            grad_color[1] * (T * rgbs[j * 3 + 1] - (g_accum - g)) +
+            grad_color[2] * (T * rgbs[j * 3 + 2] - (b_accum - b))
+        );
+	}
+}
+
+
+
+std::vector<torch::Tensor> volumetric_rendering_backward(
+    torch::Tensor accumulated_color, torch::Tensor grad_color, 
+    torch::Tensor indices, torch::Tensor positions, torch::Tensor deltas, torch::Tensor ts, 
+    torch::Tensor sigmas, torch::Tensor rgbs, torch::Tensor bkgd_rgb
+) {
+    CHECK_INPUT(accumulated_color);
+    CHECK_INPUT(grad_color);
+    CHECK_INPUT(indices);
+    CHECK_INPUT(positions);
+    CHECK_INPUT(deltas);
+    CHECK_INPUT(ts);
+    CHECK_INPUT(sigmas);
+    CHECK_INPUT(rgbs);
+    CHECK_INPUT(bkgd_rgb);
+    TORCH_CHECK(accumulated_color.ndimension() == 2);
+    TORCH_CHECK(grad_color.ndimension() == 2);
+    TORCH_CHECK(indices.ndimension() == 2);
+    TORCH_CHECK(positions.ndimension() == 2);
+    TORCH_CHECK(deltas.ndimension() == 1);
+    TORCH_CHECK(ts.ndimension() == 1);
+    TORCH_CHECK(sigmas.ndimension() == 1);
+    TORCH_CHECK(rgbs.ndimension() == 2);
+    TORCH_CHECK(bkgd_rgb.ndimension() == 1);
+    const uint32_t n_rays = accumulated_color.size(0);
+    const uint32_t n_points = sigmas.size(0);
+
+    const int cuda_n_threads = std::min<int>(n_rays, CUDA_MAX_THREADS);
+    const int blocks = CUDA_N_BLOCKS_NEEDED(n_rays, cuda_n_threads);
+
+    // outputs
+    torch::Tensor grad_sigmas = torch::zeros(sigmas.sizes(), sigmas.options()); 
+    torch::Tensor grad_rgbs = torch::zeros(rgbs.sizes(), rgbs.options()); 
+
+    AT_DISPATCH_FLOATING_TYPES(
+        sigmas.scalar_type(),
+        "volumetric_rendering_backward",
+        ([&]
+         { volumetric_rendering_backward_kernel<<<blocks, cuda_n_threads>>>(
+                n_rays,
+                indices.data_ptr<int>(), 
+                positions.data_ptr<scalar_t>(),
+                deltas.data_ptr<scalar_t>(),
+                ts.data_ptr<scalar_t>(),
+                sigmas.data_ptr<scalar_t>(),
+                rgbs.data_ptr<scalar_t>(),
+                bkgd_rgb.data_ptr<scalar_t>(),
+                accumulated_color.data_ptr<scalar_t>(),
+                grad_color.data_ptr<scalar_t>(),
+                grad_sigmas.data_ptr<scalar_t>(),
+                grad_rgbs.data_ptr<scalar_t>()
+            ); 
+        }));
+
+    return {grad_sigmas, grad_rgbs};
 }

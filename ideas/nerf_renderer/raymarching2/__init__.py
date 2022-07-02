@@ -52,7 +52,6 @@ class _volumetric_rendering(Function):
     @custom_fwd(cast_inputs=torch.float32)
     def forward(
         ctx, 
-        rays_o: torch.Tensor, 
         indices: torch.Tensor, 
         positions: torch.Tensor, 
         deltas: torch.Tensor, 
@@ -61,17 +60,21 @@ class _volumetric_rendering(Function):
         rgbs: torch.Tensor, 
         bkgd_rgb: torch.Tensor,
     ):
-        rays_o = rays_o.contiguous().view(-1, 3)
         (
             accumulated_weight, 
             accumulated_depth, 
             accumulated_color, 
             accumulated_position
         ) = _backend.volumetric_rendering(
-            rays_o, 
             indices, positions, deltas, ts, 
             sigmas, rgbs, 
             bkgd_rgb
+        )
+        ctx.save_for_backward(
+            accumulated_color,
+            indices, positions, deltas, ts,
+            sigmas, rgbs, 
+            bkgd_rgb,
         )
         return (
             accumulated_weight, 
@@ -79,5 +82,38 @@ class _volumetric_rendering(Function):
             accumulated_color, 
             accumulated_position
         )
+
+    @staticmethod
+    @custom_bwd
+    def backward(
+        ctx, 
+        grad_weight: torch.Tensor, 
+        grad_depth: torch.Tensor, 
+        grad_color: torch.Tensor, 
+        grad_position: torch.Tensor, 
+    ):
+        grad_color = grad_color.contiguous()
+
+        (
+            accumulated_color,
+            indices, positions, deltas, ts,
+            sigmas, rgbs, 
+            bkgd_rgb,
+        ) = ctx.saved_tensors
+
+        (
+            grad_sigmas, grad_rgbs
+        ) = _backend.volumetric_rendering_backward(
+            accumulated_color, grad_color,
+            indices, positions, deltas, ts, 
+            sigmas, rgbs, 
+            bkgd_rgb
+        )
+        return (
+            None, None, None, None,
+            grad_sigmas, grad_rgbs, 
+            None,
+        )
+
 volumetric_rendering = _volumetric_rendering.apply
 

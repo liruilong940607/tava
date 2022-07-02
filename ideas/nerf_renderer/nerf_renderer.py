@@ -124,8 +124,8 @@ if __name__ == "__main__":
         )
         torch.cuda.synchronize()
 
-        sigmas = torch.rand_like(deltas)
-        rgbs = torch.rand_like(positions)
+        sigmas = torch.rand_like(deltas, requires_grad=True)
+        rgbs = torch.rand_like(positions, requires_grad=True)
         bkgd_rgb = torch.zeros(3).to("cuda")
 
         (
@@ -134,18 +134,9 @@ if __name__ == "__main__":
             accumulated_color, 
             accumulated_position
         ) = raymarching2.volumetric_rendering(
-            rays_o, 
             indices, positions, deltas, ts,
             sigmas, rgbs,
             bkgd_rgb
         )
 
-    # print (nears.shape, nears[0, :10])
-    # print (positions.shape, positions)
-
-    # for _ in tqdm.tqdm(range(1000)):
-    #     nears, fars = raymarching.near_far_from_aabb(
-    #         rays_o, rays_d, aabb, 0
-    #     )
-    #     torch.cuda.synchronize()
-    # # print (nears.shape, nears[:10])
+        accumulated_color.sum().backward()
