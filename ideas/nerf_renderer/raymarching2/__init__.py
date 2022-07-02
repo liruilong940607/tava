@@ -24,7 +24,7 @@ class _generate_training_samples(Function):
         input_shape = rays_o.shape[:-1]
         rays_o = rays_o.contiguous().view(-1, 3)
         rays_d = rays_d.contiguous().view(-1, 3)
-        indices, positions, dirs, deltas, nears, fars = _backend.generate_training_samples(
+        indices, positions, dirs, deltas, ts, nears, fars = _backend.generate_training_samples(
             rays_o, rays_d, aabb, density_bitfield, max_samples
         )
         # # check
@@ -39,10 +39,45 @@ class _generate_training_samples(Function):
         #     max_err = torch.linalg.norm(errs).max()
         #     print ("max_err", max_err)
         
-        nears = nears.view(input_shape)
-        fars = fars.view(input_shape)
-        indices = indices.view(input_shape + torch.Size([3]))
+        # nears = nears.view(input_shape)
+        # fars = fars.view(input_shape)
+        # indices = indices.view(input_shape + torch.Size([3]))
 
-        return indices, positions, dirs, deltas, nears, fars
+        return indices, positions, dirs, deltas, ts, nears, fars
 generate_training_samples = _generate_training_samples.apply
+
+
+class _volumetric_rendering(Function):
+    @staticmethod
+    @custom_fwd(cast_inputs=torch.float32)
+    def forward(
+        ctx, 
+        rays_o: torch.Tensor, 
+        indices: torch.Tensor, 
+        positions: torch.Tensor, 
+        deltas: torch.Tensor, 
+        ts: torch.Tensor, 
+        sigmas: torch.Tensor, 
+        rgbs: torch.Tensor, 
+        bkgd_rgb: torch.Tensor,
+    ):
+        rays_o = rays_o.contiguous().view(-1, 3)
+        (
+            accumulated_weight, 
+            accumulated_depth, 
+            accumulated_color, 
+            accumulated_position
+        ) = _backend.volumetric_rendering(
+            rays_o, 
+            indices, positions, deltas, ts, 
+            sigmas, rgbs, 
+            bkgd_rgb
+        )
+        return (
+            accumulated_weight, 
+            accumulated_depth, 
+            accumulated_color, 
+            accumulated_position
+        )
+volumetric_rendering = _volumetric_rendering.apply
 

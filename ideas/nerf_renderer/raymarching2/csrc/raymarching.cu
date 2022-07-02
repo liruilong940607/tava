@@ -180,7 +180,8 @@ __global__ void kernel_generate_training_samples(
     int* indices_out,  // output ray & point indices.
     scalar_t* positions_out,  // output samples
     scalar_t* dirs_out,  // output dirs
-    scalar_t* deltas_out  // output delta t
+    scalar_t* deltas_out,  // output delta t
+    scalar_t* ts_out  // output t
 ) {
     // TODO(ruilongli): check those + 0.5f operation
     // what scale should the input be?
@@ -289,7 +290,8 @@ __global__ void kernel_generate_training_samples(
             dirs_out[j * 3 + 0] = dx,
             dirs_out[j * 3 + 1] = dy,
             dirs_out[j * 3 + 2] = dz,
-            deltas_out[j * 3 + 0] = dt;            
+            deltas_out[j * 3 + 0] = dt;   
+            ts_out[j * 3 + 0] = t;         
             // coords_out(j)->set_with_optional_extra_dims(
             //     warp_position(x, y, z, aabb), 
             //     warp_direction(dx, dy, dz), 
@@ -346,6 +348,7 @@ std::vector<torch::Tensor> generate_training_samples(
     torch::Tensor positions = torch::empty({max_samples, 3}, rays_o.options());
     torch::Tensor dirs = torch::empty({max_samples, 3}, rays_o.options());
     torch::Tensor deltas = torch::empty({max_samples}, rays_o.options());
+    torch::Tensor ts = torch::empty({max_samples}, rays_o.options());
 
     AT_DISPATCH_FLOATING_TYPES(
         rays_o.scalar_type(),
@@ -366,9 +369,143 @@ std::vector<torch::Tensor> generate_training_samples(
                 indices.data_ptr<int>(),  // output ray indices.
                 positions.data_ptr<scalar_t>(),  // output samples
                 dirs.data_ptr<scalar_t>(),  // output dirs
-                deltas.data_ptr<scalar_t>()  // output delta t
+                deltas.data_ptr<scalar_t>(),  // output delta t
+                ts.data_ptr<scalar_t>()  // output t
             ); 
         }));
 
-    return {indices, positions, dirs, deltas, nears, fars};
+    return {indices, positions, dirs, deltas, ts, nears, fars};
+}
+
+
+
+template <typename scalar_t>
+__global__ void volumetric_rendering_kernel(
+    const uint32_t n_rays,
+    const scalar_t* rays_o,  // input ray origins
+    const int* indices,  // input ray & point indices.
+    const scalar_t* positions,  // input samples
+    const scalar_t* deltas,  // input delta t
+    const scalar_t* ts,  // input t
+    const scalar_t* sigmas,  // input density after activation
+    const scalar_t* rgbs,  // input rgb after activation 
+    const scalar_t* bkgd_rgb,  // input background color
+    // should be all-zero initialized
+    scalar_t* accumulated_weight,  // output
+    scalar_t* accumulated_depth,  // output
+    scalar_t* accumulated_color,  // output
+    scalar_t* accumulated_position  // output
+) {
+    CUDA_GET_THREAD_ID(thread_id, n_rays);
+
+    // locate
+    int i = indices[thread_id * 3 + 0];  // ray idx in {rays_o, rays_d}
+    int base = indices[thread_id * 3 + 1];  // point idx start.
+    int numsteps = indices[thread_id * 3 + 2];  // point idx shift.
+
+    positions += base * 3;
+    deltas += base;
+    ts += base;
+    sigmas += base;
+    rgbs += base * 3;
+
+    rays_o += i * 3;
+    accumulated_weight += i;
+    accumulated_depth += i;
+    accumulated_color += i * 3;
+    accumulated_position += i * 3;
+    
+    // accumulated rendering
+    float T = 1.f;
+	float EPSILON = 1e-4f;
+	int j = 0;
+    for (; j < numsteps; ++j) {
+		if (T < EPSILON) {
+			break;
+		}
+
+		const float alpha = 1.f - __expf(-sigmas[j] * deltas[j]);
+		const float weight = alpha * T;
+		accumulated_weight[0] += weight;
+        accumulated_depth[0] += weight * ts[j * 3];
+        accumulated_color[0] += weight * rgbs[j * 3 + 0];
+        accumulated_color[1] += weight * rgbs[j * 3 + 1];
+        accumulated_color[2] += weight * rgbs[j * 3 + 2];
+        accumulated_position[0] += weight * positions[j * 3 + 0];
+        accumulated_position[1] += weight * positions[j * 3 + 1];
+        accumulated_position[2] += weight * positions[j * 3 + 2];
+
+		T *= (1.f - alpha);
+	}
+    // TODO(ruilongli): why not others?
+    // accumulated_depth /= (1.0f - T);
+
+    if (j == numsteps) {
+		// support arbitrary background colors
+		accumulated_color[0] += T * bkgd_rgb[0];
+		accumulated_color[1] += T * bkgd_rgb[1];
+		accumulated_color[2] += T * bkgd_rgb[2];
+	}
+}
+
+
+std::vector<torch::Tensor> volumetric_rendering(
+    torch::Tensor rays_o, torch::Tensor indices, torch::Tensor positions, 
+    torch::Tensor deltas, torch::Tensor ts, 
+    torch::Tensor sigmas, torch::Tensor rgbs, torch::Tensor bkgd_rgb
+) {
+    CHECK_INPUT(rays_o); 
+    CHECK_INPUT(indices);
+    CHECK_INPUT(positions);
+    CHECK_INPUT(deltas);
+    CHECK_INPUT(ts);
+    CHECK_INPUT(sigmas);
+    CHECK_INPUT(rgbs);
+    CHECK_INPUT(bkgd_rgb);
+    TORCH_CHECK(rays_o.ndimension() == 2);
+    TORCH_CHECK(indices.ndimension() == 2);
+    TORCH_CHECK(positions.ndimension() == 2);
+    TORCH_CHECK(deltas.ndimension() == 1);
+    TORCH_CHECK(ts.ndimension() == 1);
+    TORCH_CHECK(sigmas.ndimension() == 1);
+    TORCH_CHECK(rgbs.ndimension() == 2);
+    TORCH_CHECK(bkgd_rgb.ndimension() == 1);
+    const uint32_t n_rays = rays_o.size(0);
+
+    const int cuda_n_threads = std::min<int>(n_rays, CUDA_MAX_THREADS);
+    const int blocks = CUDA_N_BLOCKS_NEEDED(n_rays, cuda_n_threads);
+
+    // outputs
+    torch::Tensor accumulated_weight = torch::zeros({n_rays}, rays_o.options()); 
+    torch::Tensor accumulated_depth = torch::zeros({n_rays}, rays_o.options()); 
+    torch::Tensor accumulated_color = torch::zeros({n_rays, 3}, rays_o.options()); 
+    torch::Tensor accumulated_position = torch::zeros({n_rays, 3}, rays_o.options()); 
+
+    AT_DISPATCH_FLOATING_TYPES(
+        rays_o.scalar_type(),
+        "volumetric_rendering",
+        ([&]
+         { volumetric_rendering_kernel<<<blocks, cuda_n_threads>>>(
+                n_rays,
+                rays_o.data_ptr<scalar_t>(),
+                indices.data_ptr<int>(), 
+                positions.data_ptr<scalar_t>(),
+                deltas.data_ptr<scalar_t>(),
+                ts.data_ptr<scalar_t>(),
+                sigmas.data_ptr<scalar_t>(),
+                rgbs.data_ptr<scalar_t>(),
+                bkgd_rgb.data_ptr<scalar_t>(),
+                accumulated_weight.data_ptr<scalar_t>(),
+                accumulated_depth.data_ptr<scalar_t>(),
+                accumulated_color.data_ptr<scalar_t>(),
+                accumulated_position.data_ptr<scalar_t>()
+            ); 
+        }));
+
+    return {
+        accumulated_weight, 
+        accumulated_depth, 
+        accumulated_color, 
+        accumulated_position
+    };
 }

@@ -108,11 +108,9 @@ if __name__ == "__main__":
     #     # near=0.1,
     #     # far=1.0,
     # ).to("cuda")
-    rays_o = (torch.zeros((100, 100, 3)) + 0.1).to("cuda")
-    rays_d = torch.randn((100, 100, 3)).to("cuda")
+    rays_o = (torch.zeros((1, 10, 3)) + 0.1).to("cuda")
+    rays_d = torch.randn((1, 10, 3)).to("cuda")
     rays_d = F.normalize(rays_d, dim=-1)
-    # for _ in tqdm.tqdm(range(1)):
-    #     renderer.run(rays_o, rays_d)
 
     density_bitfield = (torch.ones(
         (5, 128 ** 3 // 8), dtype=torch.uint8
@@ -121,10 +119,27 @@ if __name__ == "__main__":
     aabb = torch.tensor([0., 0., 0., 1., 1., 1.]).to("cuda")
 
     for _ in tqdm.tqdm(range(1)):
-        indices, positions, dirs, deltas, nears, fars = raymarching2.generate_training_samples(
+        indices, positions, dirs, deltas, ts, nears, fars = raymarching2.generate_training_samples(
             rays_o, rays_d, aabb, density_bitfield
         )
         torch.cuda.synchronize()
+
+        sigmas = torch.rand_like(deltas)
+        rgbs = torch.rand_like(positions)
+        bkgd_rgb = torch.zeros(3).to("cuda")
+
+        (
+            accumulated_weight, 
+            accumulated_depth, 
+            accumulated_color, 
+            accumulated_position
+        ) = raymarching2.volumetric_rendering(
+            rays_o, 
+            indices, positions, deltas, ts,
+            sigmas, rgbs,
+            bkgd_rgb
+        )
+
     # print (nears.shape, nears[0, :10])
     # print (positions.shape, positions)
 
