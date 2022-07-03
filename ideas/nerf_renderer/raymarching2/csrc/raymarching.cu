@@ -127,8 +127,8 @@ __host__ __device__ void ray_aabb_intersect(
     const scalar_t* rays_o,
     const scalar_t* rays_d,
     const scalar_t* aabb,
-    scalar_t* nears,
-    scalar_t* fars
+    scalar_t* near,
+    scalar_t* far
 ) {
     // aabb is [xmin, ymin, zmin, xmax, ymax, zmax]
     float tmin = (aabb[0] - rays_o[0]) / rays_d[0];
@@ -140,7 +140,8 @@ __host__ __device__ void ray_aabb_intersect(
     if (tymin > tymax) swapf(tymin, tymax);
 
     if (tmin > tymax || tymin > tmax){
-        nears[0] = fars[0] = std::numeric_limits<float>::max();
+        *near = std::numeric_limits<float>::max();
+        *far = std::numeric_limits<float>::max();
         return;
     }
 
@@ -152,15 +153,16 @@ __host__ __device__ void ray_aabb_intersect(
     if (tzmin > tzmax) swapf(tzmin, tzmax);
 
     if (tmin > tzmax || tzmin > tmax){
-        nears[0] = fars[0] = std::numeric_limits<float>::max();
+        *near = std::numeric_limits<float>::max();
+        *far = std::numeric_limits<float>::max();
         return;
     }
 
     if (tzmin > tmin) tmin = tzmin;
     if (tzmax < tmax) tmax = tzmax;
 
-    nears[0] = tmin;
-    fars[0] = tmax;
+    *near = tmin;
+    *far = tmax;
     return;
 }
 
@@ -170,8 +172,6 @@ __global__ void kernel_generate_training_samples(
     const scalar_t* rays_o,
     const scalar_t* rays_d,
     const scalar_t* aabb,
-    scalar_t* nears,
-    scalar_t* fars,
     const uint32_t grid_size,  // default is 128
     const uint8_t* density_bitfield,
     int* numsteps_counter,  // total samples.
@@ -191,18 +191,17 @@ __global__ void kernel_generate_training_samples(
     // locate
     rays_o += i * 3;
     rays_d += i * 3;
-    nears += i;
-    fars += i;
 
     // ray aabb test: The near distance prevents learning of camera-specific fudge 
     // right in front of the camera.
-    ray_aabb_intersect(rays_o, rays_d, aabb, nears, fars);
-    nears[0] = fmaxf(nears[0], 0.0f);
+    scalar_t near, far;
+    ray_aabb_intersect(rays_o, rays_d, aabb, &near, &far);
+    near = fmaxf(near, 0.0f);
 
     const float ox = rays_o[0], oy = rays_o[1], oz = rays_o[2];
     const float dx = rays_d[0], dy = rays_d[1], dz = rays_d[2];
     const float rdx = 1 / dx, rdy = 1 / dy, rdz = 1 / dz;
-    const float startt = nears[0], endt = fars[0];
+    const float startt = near, endt = far;
     // if (i == 0) {
 	//     printf("thread %d: startt %f; endt %f;\n", i, startt, endt);
     // }
@@ -290,8 +289,8 @@ __global__ void kernel_generate_training_samples(
             dirs_out[j * 3 + 0] = dx,
             dirs_out[j * 3 + 1] = dy,
             dirs_out[j * 3 + 2] = dz,
-            deltas_out[j * 3 + 0] = dt;   
-            ts_out[j * 3 + 0] = t;         
+            deltas_out[j + 0] = dt;   
+            ts_out[j + 0] = t;         
             // coords_out(j)->set_with_optional_extra_dims(
             //     warp_position(x, y, z, aabb), 
             //     warp_direction(dx, dy, dz), 
@@ -333,9 +332,6 @@ std::vector<torch::Tensor> generate_training_samples(
     const int cuda_n_threads = std::min<int>(n_rays, CUDA_MAX_THREADS);
     const int blocks = CUDA_N_BLOCKS_NEEDED(n_rays, cuda_n_threads);
 
-    torch::Tensor nears = torch::empty({n_rays}, rays_o.options());
-    torch::Tensor fars = torch::empty({n_rays}, rays_o.options());
-
     // helper counter
     torch::Tensor numsteps_counter = torch::zeros(
         {1}, rays_o.options().dtype(torch::kInt32));
@@ -359,8 +355,6 @@ std::vector<torch::Tensor> generate_training_samples(
                 rays_o.data_ptr<scalar_t>(),
                 rays_d.data_ptr<scalar_t>(),
                 aabb.data_ptr<scalar_t>(),
-                nears.data_ptr<scalar_t>(),  // output
-                fars.data_ptr<scalar_t>(),  // output
                 grid_size,
                 density_bitfield.data_ptr<uint8_t>(),
                 numsteps_counter.data_ptr<int>(),  // total samples.
@@ -374,7 +368,7 @@ std::vector<torch::Tensor> generate_training_samples(
             ); 
         }));
 
-    return {indices, positions, dirs, deltas, ts, nears, fars};
+    return {indices, positions, dirs, deltas, ts};
 }
 
 
@@ -421,7 +415,6 @@ __global__ void volumetric_rendering_kernel(
 		if (T < EPSILON) {
 			break;
 		}
-
 		const float alpha = 1.f - __expf(-sigmas[j] * deltas[j]);
 		const float weight = alpha * T;
 		accumulated_weight[0] += weight;
@@ -432,7 +425,7 @@ __global__ void volumetric_rendering_kernel(
         accumulated_position[0] += weight * positions[j * 3 + 0];
         accumulated_position[1] += weight * positions[j * 3 + 1];
         accumulated_position[2] += weight * positions[j * 3 + 2];
-
+        // printf("alpha: %f; T: %f; weight: %f \n", alpha, T, weight);
 		T *= (1.f - alpha);
 	}
     // TODO(ruilongli): why not others?
@@ -524,15 +517,18 @@ __global__ void volumetric_rendering_backward_kernel(
     CUDA_GET_THREAD_ID(thread_id, n_rays);
 
     // locate
-    int i = indices[thread_id * 3 + 0];  // ray idx in {rays_o, rays_d}
-    int base = indices[thread_id * 3 + 1];  // point idx start.
-    int numsteps = indices[thread_id * 3 + 2];  // point idx shift.
+    const int i = indices[thread_id * 3 + 0];  // ray idx in {rays_o, rays_d}
+    const int base = indices[thread_id * 3 + 1];  // point idx start.
+    const int numsteps = indices[thread_id * 3 + 2];  // point idx shift.
+    if (numsteps == 0) return;
 
     positions += base * 3;
     deltas += base;
     ts += base;
     sigmas += base;
     rgbs += base * 3;
+    grad_sigmas += base;
+    grad_rgbs += base * 3;
 
     accumulated_color += i * 3;
     grad_color += i * 3;
@@ -563,6 +559,7 @@ __global__ void volumetric_rendering_backward_kernel(
         grad_rgbs[j * 3 + 0] = grad_color[0] * weight;
         grad_rgbs[j * 3 + 1] = grad_color[1] * weight;
         grad_rgbs[j * 3 + 2] = grad_color[2] * weight;
+        // printf("grad_color: %f; weight: %f\n", grad_color[0], weight);
 
         grad_sigmas[j] = deltas[j] * (
             grad_color[0] * (T * rgbs[j * 3 + 0] - (r_accum - r)) +
