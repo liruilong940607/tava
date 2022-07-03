@@ -14,6 +14,7 @@
 # limitations under the License.
 import torch
 import torch.nn as nn
+from tava.models.basic.posi_enc import TCNNHashPositionalEncoder
 
 
 class NerfModel(nn.Module):
@@ -48,7 +49,7 @@ class NerfModel(nn.Module):
         assert num_levels in [1, 2]
         self.mlp_coarse = mlp_coarse
         self.mlp_fine = mlp_fine if num_levels == 2 else None
-        self.pos_enc = pos_enc
+        self.pos_enc = pos_enc if pos_enc else lambda x: x
         self.view_enc = view_enc
         self.num_levels = num_levels
         self.num_samples_coarse = num_samples_coarse
@@ -64,10 +65,12 @@ class NerfModel(nn.Module):
         self.coarse_sample_with_fine = coarse_sample_with_fine
 
     def _query_mlp(self, rays, samples, i_level, randomized=True, **kwargs):
-        if self.pos_enc:
-            samples_enc = self.pos_enc(samples)
+        if isinstance(self.pos_enc, TCNNHashPositionalEncoder):
+            # samples out side of bbox should be masked out (zero density)
+            samples_enc, samples_mask = self.pos_enc(samples)
         else:
-            samples_enc = samples
+            samples_enc = self.pos_enc(samples)
+            samples_mask = None
 
         mlp = self.mlp_coarse if i_level == 0 else self.mlp_fine
 
@@ -90,6 +93,10 @@ class NerfModel(nn.Module):
         rgb = self.rgb_activation(raw_rgb)
         rgb = rgb * (1 + 2 * self.rgb_padding) - self.rgb_padding
         density = self.density_activation(raw_density + self.density_bias)
+
+        if samples_mask is not None:
+            density = density * samples_mask[..., None]
+
         return rgb, density
 
     def forward(self, rays, color_bkgd, randomized: bool = True, **kwargs):

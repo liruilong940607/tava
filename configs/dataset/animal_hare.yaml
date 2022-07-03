@@ -16,3 +16,6 @@ pose_latent_dim: 0
 n_transforms: 35
 world_dist: 0.1
 cano_dist: 0.063
+
+# canonical bbox
+bbox: [-0.07, -0.25, -0.05, 0.07, 0.25, 0.40]

@@ -11,11 +11,13 @@ from tava.utils.structures import Bones, Cameras, namedtuple_map
 
 
 def _dataset_view_split(parser, split):
-    if split == "all":
+    # TODO(ruilongli): for static nerf, we use all the views
+    # for training for now. 
+    if split in ["all", "static_train"]:
         camera_ids = parser.camera_ids
-    elif split == "train":
+    elif split in ["train"]:
         camera_ids = parser.camera_ids[::2]
-    elif split in ["val_ind", "val_ood", "val_view"]:
+    elif split in ["val_ind", "val_ood", "val_view", "static_val"]:
         camera_ids = parser.camera_ids[1::2]
     elif split == "test":
         camera_ids = parser.camera_ids[1:2]
@@ -25,11 +27,15 @@ def _dataset_view_split(parser, split):
 def _dataset_frame_split(parser, split):
     if split in ["train", "val_view"]:
         splits_fp = os.path.join(parser.root_dir, "splits/train.txt")
+    elif split in ["static_train", "static_val"]:
+        splits_fp = os.path.join(parser.root_dir, "splits/all.txt")
     else:
         splits_fp = os.path.join(parser.root_dir, f"splits/{split}.txt")
     with open(splits_fp, mode="r") as fp:
         frame_list = np.loadtxt(fp, dtype=str).tolist()
     frame_list = [(action, int(frame_id)) for (action, frame_id) in frame_list]
+    if split in ["static_train", "static_val"]:
+        frame_list = frame_list[:1]
     return frame_list
 
 
@@ -47,7 +53,10 @@ def _dataset_index_list(parser, split):
 class SubjectLoader(CachedIterDataset):
     """Single subject data loader for training and evaluation."""
 
-    SPLIT = ["all", "train", "val_ind", "val_ood", "val_view", "test"]
+    SPLIT = [
+        "all", "train", "val_ind", "val_ood", "val_view", "test", 
+        "static_train", "static_val"
+    ]
 
     @classmethod
     def encode_meta_id(cls, action, frame_id):
@@ -79,7 +88,7 @@ class SubjectLoader(CachedIterDataset):
         self.num_rays = num_rays
         self.near = near
         self.far = far
-        self.training = (num_rays is not None) and (split in ["train", "all"])
+        self.training = (num_rays is not None) and (split in ["train", "all", "static"])
         self.color_bkgd_aug = color_bkgd_aug if self.training else "white"
         self.parser = SubjectParser(
             subject_id=subject_id, root_fp=root_fp, legacy=legacy

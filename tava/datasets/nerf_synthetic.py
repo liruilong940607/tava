@@ -13,6 +13,14 @@ from tava.utils.structures import Cameras, namedtuple_map
 
 def _load_renderings(root_fp: str, subject_id: str, split: str):
     """Load images from disk."""
+    if not root_fp.startswith("/"):  
+        # allow relative path. e.g., "./data/nerf_synthetic/"
+        root_fp = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), 
+            "..", "..",
+            root_fp,
+        )
+
     data_dir = os.path.join(root_fp, subject_id)
     with open(
         os.path.join(data_dir, "transforms_{}.json".format(split)), "r"

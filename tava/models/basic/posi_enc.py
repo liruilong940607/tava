@@ -1,7 +1,10 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 """ Positional Encoding. """
 import math
+from typing import List
 
+# pip install git+https://github.com/NVlabs/tiny-cuda-nn/#subdirectory=bindings/torch
+import tinycudann as tcnn
 import torch
 import torch.nn as nn
 
@@ -146,3 +149,109 @@ class WindowedPositionalEncoder(PositionalEncoder):
         bands = torch.linspace(0, self.max_deg - 1, self.max_deg)
         x = torch.clamp(alpha - bands, 0.0, 1.0)
         return 0.5 * (1 + torch.cos(math.pi * x + math.pi))
+
+
+class TCNNHashPositionalEncoder(nn.Module):
+    """ Hash Positinal Encoder from Instant-NGP.
+    
+    https://github.com/NVlabs/instant-ngp
+    """
+    def __init__(
+        self,
+        bounding_box: List[float], 
+        in_dim: int = 3,
+        n_levels: int = 16,
+        n_features_per_level: int = 2,
+        log2_hashmap_size: int = 19,
+        base_resolution: int = 16,
+        per_level_scale: float = 2.0,
+    ):
+        super().__init__()
+        # [min_x, min_y, min_z, max_x, max_y, max_z]
+        self.bounding_box = torch.tensor(bounding_box)
+        self.in_dim = in_dim
+        self.n_levels = n_levels
+        self.n_features_per_level = n_features_per_level
+        # The input to the tcnn.Encoding should be normalized
+        # to (0, 1) using `self.bounding_box`
+        self.encoder = tcnn.Encoding(
+            n_input_dims=in_dim,
+            encoding_config={
+                "otype": "HashGrid",
+                "n_levels": n_levels,
+                "n_features_per_level": n_features_per_level,
+                "log2_hashmap_size": log2_hashmap_size,
+                "base_resolution": base_resolution,
+                "per_level_scale": per_level_scale,
+            },
+        )
+
+    @property
+    def out_dim(self):
+        return self.n_levels * self.n_features_per_level
+
+    def forward(self, x: torch.Tensor):
+        """
+        :params x: [..., 3],
+        :return x_enc: [..., self.out_dim]
+        """
+        bb_min, bb_max = torch.split(
+            self.bounding_box.to(x), [3, 3], dim=0
+        )
+        x = (x - bb_min) / (bb_max - bb_min)
+        mask = ((x > 0) & (x < 1)).all(dim=-1)
+        x = self.encoder(
+            x.reshape(-1, x.shape[-1]).half()
+        ).to(x).reshape(list(x.shape[:-1]) + [self.out_dim])
+        return x, mask
+        
+
+class TCNNSHViewEncoder(nn.Module):
+    """ SH Viewdir Encoder from Instant-NGP.
+    
+    https://github.com/NVlabs/instant-ngp
+    """
+    def __init__(
+        self,
+        in_dim: int = 3,
+        degree: int = 4,
+    ):
+        super().__init__()
+        self.in_dim = in_dim
+        self.degree = degree
+        # SH encoding requires inputs to be in [0, 1]
+        self.encoder = tcnn.Encoding(
+            n_input_dims=in_dim,
+            encoding_config={
+                "otype": "SphericalHarmonics",
+                "degree": degree,
+            },
+        )
+
+    @property
+    def out_dim(self):
+        return self.degree ** 2
+
+    def forward(self, dir: torch.Tensor):
+        """
+        :params dir: [..., 3],
+        :return dir_enc: [..., self.out_dim]
+        """
+        # SH encoding requires inputs to be in [0, 1]
+        dir = (dir + 1) / 2
+        dir = self.encoder(dir)
+        return dir
+
+
+if __name__ == "__main__":
+    import time
+    encoder = TCNNHashPositionalEncoder([0, 0, 0, 1, 1, 1]).to("cuda")
+    
+    # with torch.no_grad():
+    for _ in range(100):
+        x = torch.rand([100000, 3]).to("cuda")
+        x.requires_grad_ = True
+        out = encoder(x)
+        out[0].sum().backward()
+        time.sleep(0.1)
+        print (out[0].shape)
