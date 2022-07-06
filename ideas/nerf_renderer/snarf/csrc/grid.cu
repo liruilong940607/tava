@@ -57,8 +57,8 @@ __global__ void kernel_grid_sample(
 	const uint32_t base_resolution,
 	const float log2_per_level_scale,
 	const float quantize_threshold,    // default is 0.f;
-	// float max_level,    // default is 1000.f
-	// const float* __restrict__ max_level_gpu,    // default is nullptr
+	float max_level,    // default is 1000.f
+	const float* __restrict__ max_level_gpu,    // default is nullptr
 	const InterpolationType interpolation_type,
 	const GridType grid_type,
 	const T* __restrict__ grid,    // [total_params_all_level, N_FEATURES_PER_LEVEL]
@@ -72,30 +72,14 @@ __global__ void kernel_grid_sample(
 
 	const uint32_t level = blockIdx.y; // <- the level is the same for all threads
 
-	// if (max_level_gpu) {
-	// 	max_level = (max_level_gpu[i] * num_grid_features) / N_FEATURES_PER_LEVEL;
-	// } else {
-	// 	max_level = (max_level * num_grid_features) / N_FEATURES_PER_LEVEL;
-	// }
+	if (max_level_gpu) {
+		max_level = (max_level_gpu[i] * num_grid_features) / N_FEATURES_PER_LEVEL;
+	} else {
+		max_level = (max_level * num_grid_features) / N_FEATURES_PER_LEVEL;
+	}
 
-	// if (level >= max_level + 1e-3f) {
-	// 	if (encoded_positions) {
-	// 		#pragma unroll
-	// 		for (uint32_t f = 0; f < N_FEATURES_PER_LEVEL; ++f) {
-	// 			encoded_positions[i + (level * N_FEATURES_PER_LEVEL + f) * num_elements] = (T)0.0f;
-	// 		}
-	// 	}
-
-	// 	// Gradient is zero for zeroed-out dimensions.
-	// 	if (dy_dx) {
-	// 		#pragma unroll
-	// 		for (uint32_t f = 0; f < N_FEATURES_PER_LEVEL; ++f) {
-	// 			((vector_fullp_t<N_POS_DIMS>*)dy_dx)[i + (level * N_FEATURES_PER_LEVEL + f) * num_elements] = {0};
-	// 		}
-	// 	}
-
-	// 	return;
-	// }
+	// All zero return
+	if (level >= max_level + 1e-3f) return;
 
 	grid += hashmap_offset_table[level] * N_FEATURES_PER_LEVEL;
 	const uint32_t hashmap_size = hashmap_offset_table[level + 1] - hashmap_offset_table[level];
@@ -224,6 +208,225 @@ __global__ void kernel_grid_sample(
 	}
 }
 
+// __global__ void kernel_softmax(
+// 	const uint32_t n_features, 
+// 	const uint32_t num_elements,    // the number of points to be queried
+// 	const T* logits,	// [num_elements, dim]
+// 	const float soft_blend,
+// 	T* __restrict__ out
+// ) {
+// 	const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+// 	if (i >= num_elements) return;
+
+// 	logits += i * n_features;
+// 	out += i * n_features;
+
+// 	T sum = 0;
+// 	#pragma unroll
+// 	for (uint32_t dim = 0; dim < n_features; ++dim) {
+// 		sum += std::exp(logits[dim] * soft_blend);
+// 	}
+
+// 	#pragma unroll
+// 	for (uint32_t dim = 0; dim < n_features; ++dim) {
+// 		out[dim] = std::exp(logits[dim] * soft_blend) / sum;
+// 	}
+// 	return;
+// }
+
+
+inline __host__ __device__ float l2norm(float* vec) {
+	float out = 0.f;
+	#pragma unroll
+	for (uint32_t i = 0; i < 3; ++i) {
+		out += vec[i] * vec[i];
+	}
+	return sqrtf(out);
+}
+
+inline __host__ __device__ float vec_dot_vec(float* vec1, float* vec2) {
+	float out = 0.f;
+	#pragma unroll
+	for (uint32_t i = 0; i < 3; ++i) {
+		out += vec1[i] * vec2[i];
+	}
+	return out;
+}
+
+inline __host__ __device__ void mat_dot_vec(float* mat, float* vec, float* out) {
+	#pragma unroll
+	for (uint32_t i = 0; i < 3; ++i) {
+		out[i] = 0.f;
+		#pragma unroll
+		for (uint32_t j = 0; j < 3; ++j) {
+			out[i] += mat[i * 3 + j] * vec[j];
+		}
+	}
+	return;
+}
+
+inline __host__ __device__ void subtract(float* vec1, float* vec2, float* out) {
+	out[0] = vec1[0] - vec2[0];
+	out[1] = vec1[1] - vec2[1];
+	out[2] = vec1[2] - vec2[2];
+	return;
+}
+
+__host__ __device__ void func_test(float* x, float* out) {
+	// f(x) = x (x - 1)
+	out[0] = x[0] * x[0] - x[0];
+	out[1] = x[1] * x[1] - x[1];
+	out[2] = x[2] * x[2] - x[2];
+	return;
+}
+
+template <typename F>
+__host__ __device__ bool broyden(
+	F func,
+	const float* jac,  // jacobian of func at x
+	float* x  // init and out
+) {
+	// https://github.com/liruilong940607/implcarv/blob/main/models/root.py
+	// https://github.com/kthohr/optim/blob/06c8596fa56a6e6ff6b6ec3dae8787b6ff77de3f/src/zeros/broyden.cpp
+
+	uint32_t max_iters = 50;
+	float tol = 1e-5;
+	float dvg_thresh = 1.0;
+	float eps = 1e-6;
+
+	// printf ("x: [%f, %f, %f] \n", x[0], x[1], x[2]);
+
+	float f[3];
+	func(x, f);
+
+	float err = l2norm(f);
+	
+	// printf ("f: [%f, %f, %f] \n", f[0], f[1], f[2]);
+	// printf ("err: %f\n", err);
+	
+	if (err < tol) return true;  // converged
+	if (err > dvg_thresh) return false;  // diverged
+
+	// initial approx. to inverse Jacobian
+	float J_inv[9] = {
+		1.f, 0.f, 0.f, 
+		0.f, 1.f, 0.f, 
+		0.f, 0.f, 1.f
+	};
+	if (jac) {
+		// computes the inverse of jac
+		float det = (
+			jac[0 * 3 + 0] * (jac[1 * 3 + 1] * jac[2 * 3 + 2] - jac[2 * 3 - 1] * jac[1 * 3 + 2]) -
+			jac[0 * 3 + 1] * (jac[1 * 3 + 0] * jac[2 * 3 + 2] - jac[1 * 3 - 2] * jac[2 * 3 + 0]) +
+			jac[0 * 3 + 2] * (jac[1 * 3 + 0] * jac[2 * 3 + 1] - jac[1 * 3 + 1] * jac[2 * 3 + 0])
+		);
+		if (fabsf(det) > 1e-6f) {
+			float invdet = 1.f / det;
+			J_inv[0 * 3 + 0] = (jac[1 * 3 + 1] * jac[2 * 3 + 2] - jac[2 * 3 + 1] * jac[1 * 3 + 2]) * invdet;
+			J_inv[0 * 3 + 1] = (jac[0 * 3 + 2] * jac[2 * 3 + 1] - jac[0 * 3 + 1] * jac[2 * 3 + 2]) * invdet;
+			J_inv[0 * 3 + 2] = (jac[0 * 3 + 1] * jac[1 * 3 + 2] - jac[0 * 3 + 2] * jac[1 * 3 + 1]) * invdet;
+			J_inv[1 * 3 + 0] = (jac[1 * 3 + 2] * jac[2 * 3 + 0] - jac[1 * 3 + 0] * jac[2 * 3 + 2]) * invdet;
+			J_inv[1 * 3 + 1] = (jac[0 * 3 + 0] * jac[2 * 3 + 2] - jac[0 * 3 + 2] * jac[2 * 3 + 0]) * invdet;
+			J_inv[1 * 3 + 2] = (jac[1 * 3 + 0] * jac[0 * 3 + 2] - jac[0 * 3 + 0] * jac[1 * 3 + 2]) * invdet;
+			J_inv[2 * 3 + 0] = (jac[1 * 3 + 0] * jac[2 * 3 + 1] - jac[2 * 3 + 0] * jac[1 * 3 + 1]) * invdet;
+			J_inv[2 * 3 + 1] = (jac[2 * 3 + 0] * jac[0 * 3 + 1] - jac[0 * 3 + 0] * jac[2 * 3 + 1]) * invdet;
+			J_inv[2 * 3 + 2] = (jac[0 * 3 + 0] * jac[1 * 3 + 1] - jac[1 * 3 + 0] * jac[0 * 3 + 1]) * invdet;
+		}
+	}
+	
+	float dx[3], x_new[3], df[3], f_new[3];
+	float u[3], d[3], a[3], vT[3];
+    for (uint32_t iter = 0; iter < max_iters; ++iter) {
+		// update x
+        mat_dot_vec(J_inv, f, dx);
+        subtract(x, dx, x_new);
+        x[0] = x_new[0];
+		x[1] = x_new[1];
+		x[2] = x_new[2];
+
+		// update f
+    	func(x, f_new);
+        subtract(f_new, f, df);
+        f[0] = f_new[0];
+		f[1] = f_new[1];
+		f[2] = f_new[2];
+
+		err = l2norm(f);
+		// printf ("[iter %d] err: %f\n", iter, err);
+		if (err < tol) return true;  // converged
+		if (err > dvg_thresh) return false;  // diverged
+
+		// update J_inv for the next iteration.
+        mat_dot_vec(J_inv, df, u);
+        d[0] = -dx[0];
+		d[1] = -dx[1];
+		d[2] = -dx[2];
+        subtract(d, u, a);
+		float b = vec_dot_vec(d, u);
+		b += ((b > 0) ? 1.f : -1.f) * eps;
+		mat_dot_vec(J_inv, d, vT);
+		
+		J_inv[0] += vT[0] * a[0] / b;
+		J_inv[1] += vT[1] * a[0] / b;
+		J_inv[2] += vT[2] * a[0] / b;
+		J_inv[3] += vT[0] * a[1] / b;
+		J_inv[4] += vT[1] * a[1] / b;
+		J_inv[5] += vT[2] * a[1] / b;
+		J_inv[6] += vT[0] * a[2] / b;
+		J_inv[7] += vT[1] * a[2] / b;
+		J_inv[8] += vT[2] * a[2] / b;
+	}        
+
+	return false;
+}
+
+__global__ void kernel_root_finding(
+	const uint32_t num_elements, 
+	const float* x_jac,
+	float* x_in_out,
+	bool* success
+) {
+	const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+	if (i >= num_elements) return;
+
+	// locate
+	float* x = x_in_out + i * 3;
+	const float* jac = x_jac ? x_jac + i * 3 * 3 : nullptr;
+
+	success[i] = broyden(func_test, jac, x);
+
+	return;
+}
+
+std::vector<torch::Tensor> root_finding(
+    const torch::Tensor x_init, const torch::Tensor x_jac
+) {
+	const uint32_t num_elements = x_init.size(0);
+
+	const uint32_t num_threads = 512;
+    const uint32_t num_blocks = div_round_up(num_elements, num_threads);
+
+	torch::Tensor x_root = x_init.clone(); 
+	torch::Tensor success = torch::zeros(
+		{num_elements}, x_init.options().dtype(torch::kBool)
+	); 
+
+	AT_DISPATCH_FLOATING_TYPES(
+        x_init.scalar_type(),
+        "root_finding",
+        ([&]
+         {kernel_root_finding<<<num_blocks, num_threads>>>(
+			num_elements,
+			x_jac.data_ptr<float>(), 
+			x_root.data_ptr<float>(),
+			success.data_ptr<bool>()
+			);
+         })
+	);
+
+	return {x_root, success};
+}
+
 std::vector<torch::Tensor> grid_sample(
     const torch::Tensor positions,    // [num_elements, N_POS_DIMS]
     const torch::Tensor grid,     // [total_hashmap_size, N_FEATURES_PER_LEVEL]
@@ -289,15 +492,15 @@ std::vector<torch::Tensor> grid_sample(
         positions.scalar_type(),
         "grid_sample",
         ([&]
-         {kernel_grid_sample<scalar_t, 3, 36><<<blocks_hashgrid, N_THREADS_HASHGRID>>>(
+         {kernel_grid_sample<scalar_t, 3, 2><<<blocks_hashgrid, N_THREADS_HASHGRID>>>(
                 num_elements,
                 n_features,
                 &hashmap_offsets_table[0],
                 base_resolution,
                 std::log2(per_level_scale),
                 0.f,   // quantize_threshold
-                // 1000.f,    // max_level
-                // nullptr,    // max_level_gpu
+                1000.f,    // max_level
+                nullptr,    // max_level_gpu
                 InterpolationType::Linear,  // interpolation_type
                 grid_type,
                 grid.data_ptr<scalar_t>(),

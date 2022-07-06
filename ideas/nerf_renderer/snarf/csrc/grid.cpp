@@ -4,6 +4,10 @@
 
 #include "common.h"
 
+std::vector<torch::Tensor> root_finding(
+    const torch::Tensor x_init,	const torch::Tensor x_jac
+);
+
 std::vector<torch::Tensor> grid_sample(
     const torch::Tensor positions,    // [num_elements, N_POS_DIMS]
     const torch::Tensor grid,     // [total_hashmap_size, N_FEATURES_PER_LEVEL]
@@ -18,6 +22,7 @@ std::vector<torch::Tensor> grid_sample(
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 {
     m.def("grid_sample", &grid_sample, "");
+    m.def("root_finding", &root_finding, "");
     py::enum_<InterpolationType>(m, "InterpolationType")
         .value("Nearest", InterpolationType::Nearest)
         .value("Linear", InterpolationType::Linear)

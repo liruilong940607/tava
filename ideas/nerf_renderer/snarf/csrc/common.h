@@ -43,7 +43,7 @@
 // #include <string>
 // #include <cassert>
 // #include <cstdint>
-// #include <cstdio>
+#include <cstdio>
 
 static constexpr float PI = 3.14159265358979323846f;
 static constexpr float SQRT2 = 1.41421356237309504880f;

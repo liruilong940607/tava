@@ -36,3 +36,14 @@ class _grid_sample(torch.autograd.Function):
         return encoded_positions
 
 grid_sample = _grid_sample.apply
+
+class _root_finding(torch.autograd.Function):
+    @staticmethod
+    @custom_fwd(cast_inputs=torch.float32)
+    def forward(ctx, x_init: torch.Tensor, x_jac: torch.Tensor = None):
+        if x_jac is None:
+            x_jac = torch.eye(3).to(x_init)[None].expand(x_init.shape[0], -1, -1)
+        x_root, success = _C.root_finding(x_init, x_jac)
+        return x_root, success 
+
+root_finding = _root_finding.apply
