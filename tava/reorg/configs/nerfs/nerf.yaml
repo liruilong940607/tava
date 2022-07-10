@@ -1,0 +1,24 @@
+_target_: tava.reorg.models.nerfs.nerf.NerfModel
+_recursive_: false
+
+nets:
+- _target_: tava.reorg.models.modules.NerfMLP
+  input_dim: ???
+  condition_dim: ???
+- _target_: tava.reorg.models.modules.NerfMLP
+  input_dim: ???
+  condition_dim: ???
+
+pos_enc:
+  _target_: tava.reorg.models.encoder.base.SinusoidalEncoder
+  x_dim: 3
+  min_deg: 0
+  max_deg: 10
+  use_identity: True
+
+view_enc:
+  _target_: tava.reorg.models.encoder.base.SinusoidalEncoder
+  x_dim: 3
+  min_deg: 0
+  max_deg: 4
+  use_identity: True

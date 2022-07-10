@@ -140,6 +140,11 @@ class NerfMLP(nn.Module):
         x = self.base(x)
         raw_sigma = self.sigma_layer(x)
         if condition is not None:
+            if condition.shape[:-1] != x.shape[:-1]:
+                num_rays, n_dim = condition.shape
+                condition = condition.view(
+                    [num_rays] + [1] * (x.dim() - condition.dim()) + [n_dim]
+                ).expand(list(x.shape[:-1]) + [n_dim])
             bottleneck = self.bottleneck_layer(x)
             x = torch.cat([bottleneck, condition], dim=-1)
         raw_rgb = self.rgb_layer(x)
