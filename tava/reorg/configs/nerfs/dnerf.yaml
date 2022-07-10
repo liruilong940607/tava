@@ -1,0 +1,53 @@
+_target_: tava.reorg.models.nerfs.nerf.NerfModel
+_recursive_: false
+
+nets:
+- _target_: tava.reorg.models.modules.NerfMLP
+  input_dim: ???
+  condition_dim: ???
+- _target_: tava.reorg.models.modules.NerfMLP
+  input_dim: ???
+  condition_dim: ???
+
+pos_enc:
+  _target_: "tava.reorg.models.encoder.warp_se3.SE3Encoder"
+  _recursive_: false
+
+  warp_x_encoder:
+    _target_: "tava.reorg.models.encoder.base.SinusoidalEncoder"
+    x_dim: 3
+    min_deg: 0
+    max_deg: 10
+    use_identity: True
+    
+  warp_meta_encoder:
+    _target_: "tava.reorg.models.encoder.base.SinusoidalEncoder"
+    x_dim: 1
+    min_deg: 0
+    max_deg: 10
+    use_identity: True
+
+  x_encoder:
+    _target_: "tava.reorg.models.encoder.base.SinusoidalEncoder"
+    x_dim: 3
+    min_deg: 0
+    max_deg: 10
+    use_identity: True
+
+  trunk:
+    _target_: "tava.reorg.models.modules.MLP"
+    input_dim: ???  # warp_x_encoder.latent_dim + warp_meta_encoder.latent_dim
+    output_dim: 3
+    net_depth: 6
+    net_width: 256
+    output_init: 
+      _target_: "tava.reorg.utils.hydra.partial"
+      _partial_: "torch.nn.init.uniform_"
+      b: 1e-4
+
+view_enc:
+  _target_: tava.reorg.models.encoder.base.SinusoidalEncoder
+  x_dim: 3
+  min_deg: 0
+  max_deg: 4
+  use_identity: True

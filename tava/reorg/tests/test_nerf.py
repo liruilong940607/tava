@@ -7,7 +7,7 @@ overrides = []
 
 # create the cfg
 with initialize(config_path="../configs/nerfs"):
-    cfg = compose(config_name="nerf")
+    cfg = compose(config_name="dnerf")
 print (cfg)
 
 model = instantiate(cfg)
