@@ -1,0 +1,146 @@
+""" The MLPs and Voxels. """
+from typing import Callable, Optional
+
+import torch
+import torch.nn as nn
+
+
+class MLP(nn.Module):
+    def __init__(
+        self,
+        input_dim: int,  # The number of input tensor channels.
+        output_dim: int = None,  # The number of output tensor channels.
+        net_depth: int = 8,  # The depth of the MLP.
+        net_width: int = 256,  # The width of the MLP.
+        skip_layer: int = 4,  # The layer to add skip layers to.
+        hidden_init: Callable = nn.init.xavier_uniform_,
+        hidden_activation: Callable = nn.ReLU(),
+        output_enabled: bool = True,
+        output_init: Optional[Callable] = nn.init.xavier_uniform_,
+        output_activation: Optional[Callable] = lambda x: x,
+        bias_enabled: bool = True,
+        bias_init: Callable = nn.init.zeros_,
+    ):
+        super().__init__()
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.net_depth = net_depth
+        self.net_width = net_width
+        self.skip_layer = skip_layer
+        self.hidden_init = hidden_init
+        self.hidden_activation = hidden_activation
+        self.output_enabled = output_enabled
+        self.output_init = output_init
+        self.output_activation = output_activation
+        self.bias_enabled = bias_enabled
+        self.bias_init = bias_init
+
+        self.hidden_layers = nn.ModuleList()
+        in_features = self.input_dim
+        for i in range(self.net_depth):
+            self.hidden_layers.append(
+                nn.Linear(in_features, self.net_width, bias=bias_enabled)
+            )
+            if (
+                (self.skip_layer is not None) and 
+                (i % self.skip_layer == 0) and
+                (i > 0)
+            ):
+                in_features = self.net_width + self.input_dim
+            else:
+                in_features = self.net_width
+        if self.output_enabled:
+            self.output_layer = nn.Linear(
+                in_features, self.output_dim, bias=bias_enabled
+            )
+        else:
+            self.output_dim = in_features
+
+        self.initialize()
+
+    def initialize(self):
+        def init_func_hidden(m):
+            if isinstance(m, nn.Linear):
+                if self.hidden_init is not None:
+                    self.hidden_init(m.weight)
+                if self.bias_enabled and self.bias_init is not None:
+                    self.bias_init(m.bias)
+        self.hidden_layers.apply(init_func_hidden)
+        if self.output_enabled:
+            def init_func_output(m):
+                if isinstance(m, nn.Linear):
+                    if self.output_init is not None:
+                        self.output_init(m.weight)
+                    if self.bias_enabled and self.bias_init is not None:
+                        self.bias_init(m.bias)
+            self.output_layer.apply(init_func_output)
+
+    def forward(self, x):
+        inputs = x
+        for i in range(self.net_depth):
+            x = self.hidden_layers[i](x)
+            x = self.hidden_activation(x)
+            if (
+                (self.skip_layer is not None) and 
+                (i % self.skip_layer == 0) and
+                (i > 0)
+            ):
+                x = torch.cat([x, inputs], dim=-1)
+        if self.output_enabled:
+            x = self.output_layer(x)
+            x = self.output_activation(x)
+        return x
+
+
+class DenseLayer(MLP):
+    def __init__(self, input_dim, output_dim, **kwargs):
+        super().__init__(
+            input_dim=input_dim,
+            output_dim=output_dim,
+            net_depth=0, # no hidden layers
+            **kwargs,
+        )
+
+
+class NerfMLP(nn.Module):
+    def __init__(
+        self,
+        input_dim: int,  # The number of input tensor channels.
+        condition_dim: int,  # The number of condition tensor channels.
+        net_depth: int = 8,  # The depth of the MLP.
+        net_width: int = 256,  # The width of the MLP.
+        skip_layer: int = 4,  # The layer to add skip layers to.
+        net_depth_condition: int = 1,  # The depth of the second part of MLP.
+        net_width_condition: int = 128,  # The width of the second part of MLP.
+    ):
+        super().__init__()
+        self.base = MLP(
+            input_dim=input_dim,
+            net_depth=net_depth,
+            net_width=net_width,
+            skip_layer=skip_layer,
+            output_enabled=False,
+        )
+        hidden_features = self.base.output_dim
+        self.sigma_layer = DenseLayer(hidden_features, 1)
+
+        if condition_dim > 0:
+            self.bottleneck_layer = DenseLayer(hidden_features, net_width)
+            self.rgb_layer = MLP(
+                input_dim=net_width + condition_dim, 
+                output_dim=3,
+                net_depth=net_depth_condition,
+                net_width=net_width_condition,
+                skip_layer=None,
+            )
+        else:
+            self.rgb_layer = DenseLayer(hidden_features, 3)
+
+    def forward(self, x, condition = None):
+        x = self.base(x)
+        raw_sigma = self.sigma_layer(x)
+        if condition is not None:
+            bottleneck = self.bottleneck_layer(x)
+            x = torch.cat([bottleneck, condition], dim=-1)
+        raw_rgb = self.rgb_layer(x)
+        return raw_sigma, raw_rgb
