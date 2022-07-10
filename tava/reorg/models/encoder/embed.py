@@ -19,4 +19,6 @@ class EmbedEncoder(AbstractEncoder):
         return self.embedding_dim
 
     def forward(self, x: torch.Tensor, meta: Dict = None) -> Dict:
+        if x.size(-1) == 1:
+            x = x.squeeze(-1)
         return {"latent": self.embed(x)}

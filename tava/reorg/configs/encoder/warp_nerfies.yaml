@@ -1,4 +1,4 @@
-_target_: "tava.reorg.models.encoder.warp_nerfies.NerfiesSE3Encoder"
+_target_: "tava.reorg.models.encoder.warp_se3.SE3Encoder"
 _recursive_: false
 
 _x_dim: 3  # must be 3 for now

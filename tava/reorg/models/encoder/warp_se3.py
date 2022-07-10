@@ -8,10 +8,11 @@ from tava.reorg.utils.transforms import se3_exp_map
 from tava.utils.point import transform_points
 
 
-class NerfiesSE3Encoder(AbstractEncoder):
+class SE3Encoder(AbstractEncoder):
     """ SE3 Deformable Encoder in Nerfies. 
     
-    Default config: tava/reorg/configs/encoder/warp_nerfies.yaml
+    Nerfies config: tava/reorg/configs/encoder/warp_nerfies.yaml
+    D-NeRF config: tava/reorg/configs/encoder/warp_dnerf.yaml
     """
     
     def __init__(
@@ -20,8 +21,8 @@ class NerfiesSE3Encoder(AbstractEncoder):
         warp_meta_encoder: DictConfig,
         x_encoder: DictConfig,
         trunk: DictConfig,
-        branch_r: DictConfig,
-        branch_t: DictConfig,
+        branch_r: DictConfig = None,
+        branch_t: DictConfig = None,
         **kwargs,
     ):
         super().__init__()
@@ -34,10 +35,14 @@ class NerfiesSE3Encoder(AbstractEncoder):
             self.warp_meta_encoder.latent_dim
         )
         self.trunk = instantiate(trunk, input_dim=input_dim)
-        self.branch_r = instantiate(
-            branch_r, input_dim=self.trunk.output_dim)
-        self.branch_t = instantiate(
-            branch_t, input_dim=self.trunk.output_dim)
+        
+        if branch_r and branch_t:
+            self.branch_r = instantiate(
+                branch_r, input_dim=self.trunk.output_dim)
+            self.branch_t = instantiate(
+                branch_t, input_dim=self.trunk.output_dim)
+        else:
+            self.branch_r = branch_t = None
 
     @property
     def latent_dim(self) -> int:
@@ -49,7 +54,7 @@ class NerfiesSE3Encoder(AbstractEncoder):
 
     def forward(self, x: torch.Tensor, meta: Dict) -> Dict:
         timestamp = meta["timestamp"]
-        assert timestamp.shape == x.shape[:-1]
+        assert timestamp.shape[:-1] == x.shape[:-1]
         step = meta.get("step", None)
 
         x_embed = self.warp_x_encoder(x, meta={"step": step})["latent"]
@@ -60,12 +65,17 @@ class NerfiesSE3Encoder(AbstractEncoder):
         inputs = torch.cat([x_embed, meta_embed], dim=-1)
         trunk_outputs = self.trunk(inputs)
 
-        log_translations = self.branch_t(trunk_outputs)
-        log_rotations = self.branch_r(trunk_outputs)
-        transforms = se3_exp_map(
-            torch.cat([log_translations, log_rotations], dim=-1)
-        )
+        if self.branch_r and self.branch_t:
+            # nerfies
+            log_translations = self.branch_t(trunk_outputs)
+            log_rotations = self.branch_r(trunk_outputs)
+            transforms = se3_exp_map(
+                torch.cat([log_translations, log_rotations], dim=-1)
+            )
+            x_warp = transform_points(x, transforms)
+        else:
+            # d-nerf
+            x_warp = x + trunk_outputs
 
-        x_warp = transform_points(x, transforms)
         x_enc = self.x_encoder(x_warp, meta={"step": step})["latent"]
         return {"latent": x_enc, "warp": x_warp}
