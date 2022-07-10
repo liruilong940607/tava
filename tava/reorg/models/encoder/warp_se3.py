@@ -54,9 +54,11 @@ class SE3Encoder(AbstractEncoder):
 
     def forward(self, x: torch.Tensor, meta: Dict) -> Dict:
         timestamp = meta["timestamp"]
-        assert timestamp.shape[:-1] == x.shape[:-1]
         step = meta.get("step", None)
 
+        if timestamp.shape[:-1] != x.shape[:-1]:
+            timestamp = torch.broadcast_to(meta, x[..., :1])
+            
         x_embed = self.warp_x_encoder(x, meta={"step": step})["latent"]
         meta_embed = self.warp_meta_encoder(
             timestamp, meta={"step": step}
