@@ -28,9 +28,9 @@ class NerfModel(nn.Module):
         self,
         nets: List[DictConfig],
         # positional encoding for coordinates
-        pos_enc: AbstractEncoder = None,
+        pos_enc: DictConfig = None,
         # positional encoding for view directions
-        view_enc: AbstractEncoder = None,
+        view_enc: DictConfig = None,
         num_samples_coarse: int = 64,  # The number of samples.
         num_samples_fine: int = 128,  # The number of samples.
         stop_level_grad: bool = True,  # If True, don't backprop across levels')
@@ -70,16 +70,16 @@ class NerfModel(nn.Module):
         self.rgb_padding = rgb_padding
         self.coarse_sample_with_fine = coarse_sample_with_fine
 
-    def _query_mlp(self, rays, samples, i_level, randomized=True, **kwargs):
+    def _query_mlp(self, viewdirs, samples, i_level, meta=None, randomized=True):
         # if isinstance(self.pos_enc, TCNNHashPositionalEncoder):
         #     # samples out side of bbox should be masked out (zero density)
         #     samples_enc, samples_mask = self.pos_enc(samples)
         # else:
         samples_enc = (
-            self.pos_enc(samples)["latent"] if self.pos_enc else samples
+            self.pos_enc(samples, meta)["latent"] if self.pos_enc else samples
         )
         viewdirs_enc = (
-            self.view_enc(rays.viewdirs)["latent"] if self.view_enc else None
+            self.view_enc(viewdirs, meta)["latent"] if self.view_enc else None
         )
 
         # Point attribute predictions
@@ -105,7 +105,7 @@ class NerfModel(nn.Module):
 
         return rgb, density
 
-    def forward(self, rays, color_bkgd, randomized: bool = True, **kwargs):
+    def forward(self, rays, color_bkgd, meta=None, randomized=True, **kwargs):
         ret = []
         extra_info = None
         weights = None
@@ -137,7 +137,7 @@ class NerfModel(nn.Module):
                 )
 
             rgb, density = self._query_mlp(
-                rays, samples, i_level=i_level, randomized=randomized, **kwargs
+                rays.viewdirs, samples, i_level, meta, randomized
             )
 
             comp_rgb, disp, acc, weights = volumetric_rendering(

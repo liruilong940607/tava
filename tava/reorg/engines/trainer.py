@@ -229,6 +229,8 @@ class Trainer(AbstractEngine):
                 data[k] = namedtuple_map(lambda x: x.to(self.device), v)
             elif isinstance(v, torch.Tensor):
                 data[k] = v.to(self.device)
+            elif isinstance(v, dict):
+                data[k] = {_k: _v.to(self.device) for _k, _v in v.items()}
             else:
                 pass
         return data

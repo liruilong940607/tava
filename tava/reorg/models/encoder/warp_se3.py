@@ -57,7 +57,7 @@ class SE3Encoder(AbstractEncoder):
         step = meta.get("step", None)
 
         if timestamp.shape[:-1] != x.shape[:-1]:
-            timestamp = torch.broadcast_to(meta, x[..., :1])
+            timestamp = torch.broadcast_to(timestamp, x[..., :1].size())
             
         x_embed = self.warp_x_encoder(x, meta={"step": step})["latent"]
         meta_embed = self.warp_meta_encoder(

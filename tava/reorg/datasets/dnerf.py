@@ -180,8 +180,7 @@ class SubjectLoader(CachedIterDataset):
         timestamp = torch.tensor(self.timestamps[camera_id]).float()
 
         return {
-            "camera_id": camera_id,
             "rgba": rgba,  # [h, w, 4]
             "rays": rays,  # [h, w]
-            "timestamp": timestamp,
+            "meta": {"timestamp": timestamp},
         }
