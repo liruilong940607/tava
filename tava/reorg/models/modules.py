@@ -148,4 +148,4 @@ class NerfMLP(nn.Module):
             bottleneck = self.bottleneck_layer(x)
             x = torch.cat([bottleneck, condition], dim=-1)
         raw_rgb = self.rgb_layer(x)
-        return raw_sigma, raw_rgb
+        return raw_rgb, raw_sigma
