@@ -1,0 +1,41 @@
+_target_: "tava.reorg.models.encoder.warp_se3.SE3Encoder"
+_recursive_: false
+
+defaults:
+  - sinusoidal_annealed@warp_x_encoder
+  - embedding@warp_meta_encoder
+  - sinusoidal@x_encoder
+  - ../modules/mlp@trunk
+  - ../modules/mlp@branch_r
+  - ../modules/mlp@branch_t
+  - _self_
+
+warp_x_encoder:
+  max_deg: 6
+  alpha_sched:
+    num_steps: 80000
+  
+warp_meta_encoder:
+  num_embeddings: ??? # dataset.num_frames
+
+trunk:
+  net_depth: 6
+  net_width: 128
+  output_enabled: false
+  
+branch_r:
+  output_dim: 3
+  net_depth: 0
+  output_init: 
+    _partial_: True
+    _target_: torch.nn.init.uniform_
+    b: 1e-4
+
+branch_t:
+  output_dim: 3
+  net_depth: 0
+  output_init: 
+    _partial_: True
+    _target_: torch.nn.init.uniform_
+    b: 1e-4
+

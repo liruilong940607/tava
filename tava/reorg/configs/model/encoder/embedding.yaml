@@ -1,0 +1,4 @@
+_target_: "tava.reorg.models.encoder.embed.EmbedEncoder"
+
+num_embeddings: ??? # dataset.num_frames
+embedding_dim: 8

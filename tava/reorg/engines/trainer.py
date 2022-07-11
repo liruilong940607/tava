@@ -114,7 +114,7 @@ class Trainer(AbstractEngine):
                 t_loop_start = time.time()
                 reset_timer = False
             lr = self.learning_rate_fn(step)
-            stats = self.train_step(data, lr)
+            stats = self.train_step(data, lr, step)
             stats_trace.append(stats)
 
             if is_main_thread and step % self.cfg.print_every == 0:
@@ -222,7 +222,7 @@ class Trainer(AbstractEngine):
         LOGGER.info("Finished Training in Rank %d!" % self.local_rank)
         return 1.0
 
-    def _preprocess(self, data, split=None):
+    def _preprocess(self, data, step):
         # to gpu
         for k, v in data.items():
             if k == "rays":
@@ -233,11 +233,13 @@ class Trainer(AbstractEngine):
                 data[k] = {_k: _v.to(self.device) for _k, _v in v.items()}
             else:
                 pass
+        if "meta" in data:
+            data["meta"].update({"step": step})
         return data
 
-    def train_step(self, data, lr):
+    def train_step(self, data, lr, step):
         self.model.train()
-        data = self._preprocess(data)
+        data = self._preprocess(data, step)
         rays = data.pop("rays")
         pixels = data.pop("pixels")
 

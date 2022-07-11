@@ -8,7 +8,7 @@ INSTALL_REQUIREMENTS = [
     "opencv-python==4.5.5.64",
     "matplotlib==3.5.1",
     "scikit-image==0.19.2",
-    "hydra-core==1.1.1",
+    "hydra-core==1.2.0",
     "tqdm==4.64.0",
     "matplotlib==3.5.1",
     "tensorboard==2.8.0",

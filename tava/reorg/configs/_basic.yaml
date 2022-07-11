@@ -26,3 +26,41 @@ train_split: ???
 engine: ???
 model: ???
 dataset: ???
+
+hydra:
+  output_subdir: null
+  job:
+    name: "reorg"
+    config:
+      override_dirname:
+        # Those keys do not affect the model performance so we
+        # exclude them from the `override_dirname`, that would
+        # affect the saving directory `run.dir`. This means other
+        # than the keys listed here, other keys you set thru
+        # command line would decide which directory to save / load
+        # the model.
+        exclude_keys:
+          - model
+          - dataset  # already included in the run.dir
+          - dataset.subject_id  # already included in the run.dir
+          - dataset.root_fp
+          - distributed
+          - resume
+          - resume_step
+          - resume_dir
+          - print_every
+          - save_every
+          - test_chunk
+          - eval_every
+          - eval_splits
+          - eval_per_gpu
+          - eval_cache_dir
+  run:
+    # set the saving / loading directory
+    dir: "outputs/\
+      ${hydra.job.name}/
+      ${hydra.runtime.choices.model}/\
+      ${hydra.runtime.choices.dataset}/\
+      ${dataset.subject_id}/\
+      cfg=${hydra.job.override_dirname}/\
+      "

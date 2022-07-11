@@ -1,0 +1,22 @@
+_target_: "tava.reorg.models.encoder.warp_se3.SE3Encoder"
+_recursive_: false
+
+defaults:
+  - sinusoidal@warp_x_encoder
+  - sinusoidal@warp_meta_encoder
+  - sinusoidal@x_encoder
+  - ../modules/mlp@trunk
+  - _self_
+
+warp_meta_encoder:
+  x_dim: 1
+  
+trunk:
+  output_dim: 3
+  net_depth: 6
+  net_width: 256
+  output_init: 
+    _target_: torch.nn.init.uniform_
+    _partial_: True
+    b: 1e-4
+

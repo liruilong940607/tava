@@ -1,0 +1,26 @@
+_target_: tava.reorg.models.modules.MLP
+
+input_dim: ???
+output_dim: null
+
+net_depth: 8
+net_width: 256
+skip_layer: 4
+
+hidden_init: 
+  _target_: torch.nn.init.xavier_uniform_
+  _partial_: True
+hidden_activation:
+  _target_: torch.nn.ReLU
+
+output_enabled: True
+output_init: 
+  _target_: torch.nn.init.xavier_uniform_
+  _partial_: True
+output_activation: 
+  _target_: torch.nn.Identity
+
+bias_enabled: True
+bias_init:
+  _target_: torch.nn.init.zeros_
+  _partial_: True

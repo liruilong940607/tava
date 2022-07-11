@@ -1,0 +1,18 @@
+# A config for dynamic (articulated) objects.
+
+defaults:
+  - _basic  # inherit configs from _basic.yaml
+  - dataset: dnerf
+  - model: dnerf
+  - _self_
+
+# set the dataset split.
+eval_splits: ["val"]
+train_split: "train"
+
+# set the losses.
+loss_coarse_mult: 1.0
+
+# set the engine. (Trainer / Evaluator)
+engine:
+  _target_: tava.reorg.engines.trainer.Trainer

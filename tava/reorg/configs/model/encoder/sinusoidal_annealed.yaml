@@ -1,0 +1,12 @@
+_target_: "tava.reorg.models.encoder.annealed.AnnealedSinusoidalEncoder"
+
+x_dim: 3
+min_deg: 0
+max_deg: 10
+use_identity: True
+
+alpha_sched: 
+  _target_: "tava.reorg.utils.schedules.LinearSchedule"
+  initial_value: ${..min_deg}
+  final_value: ${..max_deg}
+  num_steps: 10_000

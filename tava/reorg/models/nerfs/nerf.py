@@ -45,6 +45,7 @@ class NerfModel(nn.Module):
         rgb_padding: float = 0.000,  # Padding added to the RGB outputs.
         num_levels: int = 2,
         coarse_sample_with_fine: bool = True,
+        **_,
     ):
         super().__init__()
         assert num_levels in [1, 2] and len(nets) == num_levels

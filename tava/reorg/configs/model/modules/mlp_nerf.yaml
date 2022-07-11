@@ -1,0 +1,10 @@
+_target_: tava.reorg.models.modules.NerfMLP
+
+input_dim: ???
+condition_dim: ???
+
+net_depth: 8
+net_width: 256
+skip_layer: 4
+net_depth_condition: 1
+net_width_condition: 128

@@ -17,7 +17,7 @@ class MLP(nn.Module):
         hidden_activation: Callable = nn.ReLU(),
         output_enabled: bool = True,
         output_init: Optional[Callable] = nn.init.xavier_uniform_,
-        output_activation: Optional[Callable] = lambda x: x,
+        output_activation: Optional[Callable] = nn.Identity(),
         bias_enabled: bool = True,
         bias_init: Callable = nn.init.zeros_,
     ):
